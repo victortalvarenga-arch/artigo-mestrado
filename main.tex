@@ -124,7 +124,13 @@ Por fim, a Seção~\ref{sec:conclusao} apresenta as conclusões e direções par
 \section{Trabalhos relacionados}
 \label{sec:trabalhos_relacionados}
 
-O escalonamento de DAGs é um problema clássico em sistemas distribuídos. 
+O escalonamento de DAGs é um problema clássico em sistemas distribuídos.
+%
+Do ponto de vista da teoria clássica de escalonamento, distinguem-se abordagens \textit{off-line}, nas quais todas as tarefas e suas características são conhecidas previamente e o plano de escalonamento é definido antes do início da execução, e abordagens \textit{on-line}, nas quais as decisões são tomadas de forma incremental à medida que as tarefas se tornam disponíveis, sem conhecimento completo da carga futura~\cite{graham1979optimization,pinedo2016scheduling}.
+%
+Outro aspecto relevante é a preempção, que permite interromper a execução de uma tarefa em andamento para atender a outra de maior prioridade, retomando-a posteriormente; em contraste, o escalonamento não preemptivo exige que cada tarefa, uma vez iniciada, seja executada até sua conclusão~\cite{graham1979optimization,pinedo2016scheduling}.
+%
+Por fim, \textit{starvation} refere-se ao cenário em que uma ou mais tarefas permanecem indefinidamente sem serem escalonadas, geralmente por serem repetidamente preteridas em favor de tarefas de maior prioridade~\cite{pinedo2016scheduling}.
 %
 Dentre as políticas propostas, destaca-se o \textit{Heterogeneous Earliest Finish Time} (HEFT)~\cite{topcuoglu2002performance}, que calcula uma prioridade para cada tarefa com base no caminho crítico do \textit{workflow}, escalonando cada tarefa no recurso que proporciona o menor tempo estimado de término. 
 %
@@ -232,13 +238,19 @@ As execuções são comparadas com base em métricas como \textit{makespan}, nú
 \section{Protocolo de simulação}
 \label{sec:protocolo_simulacao}
 
-O escalonador proposto atua como uma camada complementar às políticas tradicionais de escalonamento. 
+O escalonador proposto atua como uma camada complementar às políticas tradicionais de escalonamento.
 %
 Ou seja, a proposta não busca substituir o conhecimento previamente difundido, mas sim atuar de forma complementar, melhorando o desempenho de propostas existentes.
+%
+Trata-se de uma abordagem \textit{on-line}: as decisões de posicionamento são tomadas dinamicamente, no momento em que cada tarefa se torna pronta para execução, com base no estado corrente da topologia e no histórico observado até então, sem conhecimento antecipado de toda a carga de trabalho futura.
 %
 Assim, a ideia central é preservar as restrições de precedência dos DAGs, mas modificar a escolha do servidor de destino com base em métricas relacionadas ao custo de comunicação. 
 %
 Dessa forma, duas tarefas podem continuar sendo selecionadas na mesma ordem definida pela política base, porém seu posicionamento pode ser ajustado para reduzir fluxos entre \textit{racks}, grupos ou servidores distantes na topologia.
+%
+Cabe destacar que a proposta não contempla preempção de tarefas: uma vez iniciada a execução em um servidor, a tarefa é executada até sua conclusão, sem interrupções motivadas pela camada \textit{network-aware}.
+%
+Da mesma forma, \textit{starvation} não é tratada como uma preocupação específica desta proposta, uma vez que a ordem de seleção das tarefas prontas continua sendo definida integralmente pela política base, de modo que esse aspecto já é resolvido pelas políticas originais.
 
 
 \subsection{Heurísticas tradicionais}
