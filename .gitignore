@@ -1,0 +1,26 @@
+# Artefatos de compilação LaTeX — não versionar
+*.aux
+*.bbl
+*.blg
+*.log
+*.out
+*.toc
+*.synctex.gz
+*.synctex(busy)
+*.fls
+*.fdb_latexmk
+*.run.xml
+*.bcf
+*.nav
+*.snm
+*.vrb
+
+# Configuração local do VS Code
+.vscode/
+
+# PDF compilado (gerado a partir do .tex, não versionar)
+main.pdf
+
+# Lixo do Windows
+Thumbs.db
+Desktop.ini

@@ -1,0 +1,609 @@
+\documentclass[12pt]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[brazil]{babel}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{sbc-template}
+\usepackage{graphicx,url}
+\usepackage{color}
+\usepackage{placeins}
+\usepackage{float}
+\usepackage[nolist]{acronym}
+\usepackage{subfigure}
+\usepackage{url}
+\usepackage{hyperref}
+\usepackage{algorithm}
+\usepackage{algorithmic}
+\usepackage{amsmath}
+\usepackage{tabularx}
+\usepackage{booktabs}
+
+\sloppy
+
+\title{Um escalonador de \textit{workflows} guiado pela perspectiva de comunicação}
+
+\author{Victor Tavares Alvarenga\inst{1}, 
+Guilherme Piêgas Koslovski\inst{1}}
+
+\address{Programa de Pós-Graduação em Computação Aplicada - PPGCAP \\
+Universidade do Estado de Santa Catarina - UDESC}
+
+\begin{document} 
+
+\input{acronyms}
+
+\maketitle
+
+
+\begin{resumo}
+A execução de workflows distribuídos depende não apenas da disponibilidade de recursos computacionais, mas também da eficiência da comunicação entre tarefas dependentes. Políticas tradicionais de escalonamento geralmente priorizam a ordem de submissão, as restrições de precedência e o custo computacional, desconsiderando o impacto do posicionamento das tarefas sobre a rede. Este artigo apresenta um escalonador de workflows consciente da rede, que executa uma política base e, em seguida, aplica uma estratégia \textit{network-aware} baseada em histórico de execução e métricas derivadas da topologia. O escalonador considera fluxos entre servidores, racks e grupos, número de saltos e custo estimado de comunicação como sinais para orientar decisões de alocação. Os resultados indicam que a incorporação de consciência de rede ao escalonamento pode reduzir custos de comunicação e diminuir potenciais pontos de congestionamento, sem alterar o tempo total de conclusão dos workflows nos cenários avaliados.
+\end{resumo}
+
+
+
+\begin{abstract}
+The execution of distributed workflows depends not only on computational resources, but also on the efficiency of communication among dependent tasks. Traditional scheduling policies usually prioritize task scheduling based on submission time, precedence constraints, and computational cost, often neglecting the impact of task placement on network congestion.
+%
+This paper presents a network-aware workflow scheduler, which executes a baseline policy and then applies a network-aware strategy that uses historical execution traces and topology-aware metrics to improve task placement decisions.
+%
+The scheduler considers cross-server, cross-rack, cross-group, hop count, and estimated communication cost as optimization signals. 
+%
+The results indicate that incorporating network-awareness into workflow scheduling can reduce communication costs and mitigate potential congestion points.
+\end{abstract}
+
+     
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\section{Introdução}
+\label{sec:introduction}
+
+A execução de aplicações distribuídas tem se tornado cada vez mais dependente de mecanismos eficientes de escalonamento. 
+%
+Nesse contexto, aplicações compostas por múltiplas tarefas interdependentes são frequentemente modeladas como \textit{workflows}, representados por grafos acíclicos direcionados, ou \textit{Directed Acyclic Graphs} (DAGs). 
+%
+Nessa representação, os vértices correspondem às tarefas e as arestas indicam relações de precedência e comunicação entre elas. 
+%
+O escalonamento de \textit{workflows} consiste em decidir quando e onde cada tarefa será executada, respeitando as dependências e buscando otimizar métricas como tempo total de execução, utilização de recursos e eficiência operacional. 
+%
+A literatura especializada contempla diversas políticas e heurísticas para esse problema, incluindo formulações clássicas de escalonamento determinístico, algoritmos baseados em listas de prioridade e heurísticas amplamente utilizadas em ambientes heterogêneos, como o HEFT \cite{graham1979optimization,topcuoglu2002performance}.
+%
+Apesar de sua relevância, muitas dessas abordagens consideram predominantemente fatores computacionais, como tempo de execução, disponibilidade de recursos e relações de precedência, tratando os custos de comunicação de forma média, estática ou simplificada. 
+%
+Mesmo levantamentos recentes sobre escalonamento de \textit{workflows} e gerenciamento de recursos em sistemas distribuídos indicam que a integração explícita entre escalonamento, comunicação e estado da rede ainda permanece como um desafio relevante \cite{liu2020resource,saeedizade2025scientific}.
+
+A comunicação entre tarefas pode impactar significativamente o tempo total de execução, especialmente quando tarefas dependentes são alocadas em servidores ou \textit{racks} distintos. 
+%
+Nesses casos, o tráfego pode atravessar múltiplos enlaces e equipamentos intermediários, aumentando o número de saltos, o custo estimado de comunicação e a possibilidade de formação de gargalos. 
+%
+Em cenários com padrões de convergência, como múltiplas tarefas predecessoras enviando dados para uma mesma tarefa sucessora, podem surgir situações associadas à concentração de tráfego, disputa por buffers e congestionamento. 
+%
+Esse comportamento é amplamente discutido na literatura de redes de data centers, especialmente em estudos sobre controle de tráfego, contenção em buffers, rajadas de comunicação e fenômenos de \textit{incast} \cite{noormohammadpour2017datacenter,li2021survey,ghabashneh2022microscopic,canel2024understanding}.
+
+O presente trabalho propõe um escalonador de \textit{workflows} consciente da rede, com foco em reduzir custos lógicos de comunicação e diminuir a ocorrência de pontos potenciais de congestionamento. 
+%
+A proposta é construída como uma camada complementar a heurísticas tradicionais de escalonamento, preservando sua lógica de ordenação das tarefas prontas, mas modificando a decisão de alocação dos servidores a partir de critérios topológicos. 
+%
+Dessa forma, a abordagem não depende de uma política base específica, podendo ser acoplada a diferentes heurísticas de escalonamento de DAGs. 
+%
+Além disso, a proposta também atua de forma complementar aos mecanismos tradicionais de controle de congestionamento existentes na camada de transporte, pois busca reduzir padrões desfavoráveis de comunicação ainda na etapa de orquestração das tarefas.
+
+A ideia central é ajustar as decisões de alocação considerando a topologia do ambiente e métricas relacionadas ao tráfego entre tarefas, de modo a reduzir a pressão sobre a infraestrutura de rede durante a execução dos \textit{workflows}.
+%
+Especificamente, o escalonador proposto utiliza métricas como fluxos entre servidores, fluxos entre \textit{racks}, fluxos entre grupos, quantidade total de saltos e custo estimado de comunicação. 
+%
+Além disso, utiliza informações históricas de execuções anteriores para orientar novas decisões de posicionamento. Essa escolha é coerente com cenários de nuvens privadas e data centers corporativos, nos quais aplicações e \textit{workflows} podem ser executados de forma recorrente, permitindo explorar informações históricas e padrões previsíveis de carga \cite{nist500292,jalaparti2015network}.
+
+Em suma, a principal contribuição deste trabalho é demonstrar que heurísticas tradicionais de escalonamento podem ser estendidas com critérios de rede sem alterar a estrutura lógica dos \textit{workflows}. 
+%
+Ao incorporar informações topológicas e históricas ao processo de decisão, o escalonador busca reduzir custos de comunicação e pontos potenciais de congestionamento, preservando as dependências entre tarefas e a semântica de execução dos DAGs. 
+%
+Além disso, por ser formulada como uma camada complementar, a abordagem proposta pode ser aplicada sobre diferentes políticas base, permitindo avaliar sua efetividade em conjunto com heurísticas distintas de escalonamento.
+
+O restante deste artigo está organizado da seguinte forma. 
+%
+A Seção~\ref{sec:trabalhos_relacionados} apresenta os principais trabalhos relacionados ao escalonamento de \textit{workflows}, políticas sensíveis à rede e controle de congestionamento em data centers. 
+%
+A Seção~\ref{sec:metodologia} descreve o modelo de \textit{workload}, a topologia utilizada e o modelo de simulação adotado. 
+%
+A Seção~\ref{sec:protocolo_simulacao} detalha o protocolo de simulação, incluindo as políticas base, a estratégia \textit{network-aware}, as métricas de decisão, o uso de histórico, os cenários avaliados e as métricas selecionadas. 
+%
+A Seção~\ref{sec:resultados_discussao} discute os resultados obtidos a partir da aplicação da proposta sobre diferentes heurísticas de escalonamento, além de apresentar uma análise integrada das métricas de comunicação. 
+%
+Por fim, a Seção~\ref{sec:conclusao} apresenta as conclusões e direções para trabalhos futuros.
+
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+
+\section{Trabalhos relacionados}
+\label{sec:trabalhos_relacionados}
+
+O escalonamento de DAGs é um problema clássico em sistemas distribuídos. 
+%
+Dentre as políticas propostas, destaca-se o \textit{Heterogeneous Earliest Finish Time} (HEFT)~\cite{topcuoglu2002performance}, que calcula uma prioridade para cada tarefa com base no caminho crítico do \textit{workflow}, escalonando cada tarefa no recurso que proporciona o menor tempo estimado de término. 
+%
+Apesar de sua ampla adoção, essa abordagem considera apenas custos médios de comunicação, não incorporando explicitamente o estado da rede nem a localização topológica dos servidores durante a decisão de alocação.
+
+Heurísticas clássicas, como \textit{Critical-Path-on-a-Processor} (CPOP), variações de \textit{list scheduling} e algoritmos de escalonamento estático de grafos de tarefas foram amplamente estudadas em ambientes paralelos e heterogêneos~\cite{graham1979optimization,kwok1999static}. 
+%
+Essas estratégias priorizam aspectos computacionais, como tempo de execução, ordem de chegada, caminho crítico, relações de precedência e disponibilidade de recursos. 
+%
+Dessa forma, decisões que parecem adequadas do ponto de vista computacional podem gerar cenários desfavoráveis do ponto de vista da comunicação entre tarefas, especialmente quando tarefas dependentes são posicionadas em servidores distantes na topologia.
+
+Propostas que consideram localidade, custo de comunicação e posicionamento conjunto de computação e dados despontaram como promissoras~\cite{jalaparti2015network}.
+%
+Esses trabalhos demonstram que incorporar informações de rede ao escalonamento pode reduzir tráfego e melhorar o desempenho das aplicações. 
+%
+No entanto, muitas dessas abordagens dependem de medições específicas do ambiente, planejamento prévio da carga ou modelos de infraestrutura mais complexos.
+
+Trabalhos recentes reforçam a atualidade do problema de escalonamento em ambientes distribuídos e de data centers. 
+%
+No contexto de \textit{workflows}, Shin et al.~\cite{shin2024cloudnative} propõem uma abordagem de escalonamento \textit{cloud-native} baseada em regra híbrida de prioridade, alocação dinâmica de recursos e particionamento dinâmico de tarefas. 
+%
+Koslovski et al.~\cite{koslovski2024dag} investigam o uso de aprendizado por reforço do tipo \textit{actor--critic} para o escalonamento de workflows baseados em DAGs. 
+%
+Além disso, Saeedizade e Ashtiani~\cite{saeedizade2025scientific} apresentam uma taxonomia recente sobre algoritmos de escalonamento de workflows científicos em ambientes de nuvem, evidenciando a diversidade de objetivos, restrições e métodos empregados nesse problema.
+
+No contexto de data centers, Vijayakumar et al.~\cite{vijayakumar2024reducedtail} analisam o escalonamento voltado à redução de latências de cauda em ambientes altamente utilizados, enquanto Canel et al.~\cite{canel2024understanding} discutem rajadas do tipo \textit{incast} em data centers modernos. 
+%
+Esses trabalhos indicam que, mesmo com avanços em escalonamento e controle de tráfego, a interação entre posicionamento de tarefas, comunicação e congestionamento continua sendo um desafio relevante.
+
+Diferentemente desses trabalhos, a proposta deste artigo atua como uma camada complementar sobre heurísticas tradicionais de escalonamento. 
+%
+O diferencial do trabalho está em preservar a lógica da política base, mas adicionar consciência de rede ao processo de alocação das tarefas. 
+%
+Com isso, busca-se reduzir custos lógicos de comunicação e potenciais pontos de congestionamento em nuvens privadas, sem alterar as dependências dos workflows nem a semântica de execução dos DAGs.
+
+
+\section{Metodologia}
+\label{sec:metodologia}
+
+A metodologia adotada baseia-se na construção de um ambiente de simulação para avaliar políticas de escalonamento de \textit{workflows} em uma topologia de \textit{data center}. 
+%
+A simulação permite a análise de diferentes combinações de heurísticas tradicionais, oriundas da literatura especializada discutida na Seção~\ref{sec:trabalhos_relacionados}, e métricas representativas da perspectiva da rede.
+
+O conjunto de \textit{workflows} é composto por 200 DAGs derivados de perfis de \textit{workflows} científicos caracterizados na literatura e utilizados no contexto do projeto Pegasus~\cite{juve2013characterizing,deelman2019pegasus}. 
+%
+O Pegasus é um sistema de gerenciamento de \textit{workflows} científicos amplamente utilizado para descrever, planejar e executar aplicações compostas por tarefas interdependentes em ambientes distribuídos. 
+%
+Nesse contexto, os \textit{workflows} utilizados representam aplicações científicas modeladas como DAGs, nas quais as tarefas possuem relações explícitas de precedência e comunicação.
+%
+Cada \textit{workflow} é descrito como um conjunto de tarefas com tempo de submissão, tempo estimado de execução, consumo de recurso e dependências explícitas entre tarefas.
+
+Por sua vez, a infraestrutura de execução é representada por uma topologia Dragonfly~\cite{kim2008technology}. 
+%
+Essa topologia foi proposta para interconexões de larga escala, explorando roteadores de alta radix, baixa distância média entre nós e organização hierárquica em grupos. 
+%
+Nessa topologia, os servidores de computação são organizados em \textit{racks}, conectados a roteadores locais, que por sua vez são agrupados em domínios de comunicação, permitindo distinguir enlaces locais, enlaces entre \textit{racks} de um mesmo grupo e enlaces entre grupos distintos.
+
+Essa estrutura é relevante para o escalonador proposto, pois permite estimar diferentes níveis de custo de comunicação entre tarefas dependentes. 
+%
+Além disso, topologias hierárquicas e interconexões de alto desempenho continuam relevantes em sistemas de computação de grande escala. Estudos recentes sobre redes de interconexão em sistemas de alto desempenho analisam as principais tecnologias presentes no TOP500 e destacam a importância de fatores como largura de banda, latência, radix dos switches e topologia da rede para a escalabilidade dos sistemas~\cite{lu2022survey,top5002025november}.
+%
+Quando duas tarefas são posicionadas no mesmo servidor, o custo de comunicação é mínimo, visto que a troca de mensagens ocorre internamente.
+%
+Quando são alocadas em servidores diferentes do mesmo \textit{rack}, há comunicação local. 
+%
+Já quando a comunicação atravessa \textit{racks} ou grupos distintos, o tráfego percorre mais saltos na topologia, aumentando o custo estimado e a possibilidade de concentração de fluxos em enlaces compartilhados.
+
+A Figura~\ref{fig:dragonfly_topology} apresenta a visão completa da topologia Dragonfly incluindo servidores de computação e roteadores. 
+%
+Essa representação permite visualizar a distribuição dos nós computacionais e sua associação aos respectivos \textit{racks}. 
+%
+Já a Figura~\ref{fig:dragonfly_routers} apresenta uma visão simplificada contendo apenas os roteadores e suas conexões, facilitando a visualização da estrutura hierárquica entre \textit{racks} e grupos de comunicação.
+
+\begin{figure}[htb]
+	\begin{center}
+        \subfigure[Representação completa incluindo servidores de computação e roteadores.]{
+		    \includegraphics[width=0.47\linewidth]{images/dragonfly_topology.png}
+            \label{fig:dragonfly_topology}
+        }
+        \subfigure[Representação simplificada, apenas os roteadores e conexões entre \textit{racks} e grupos.]{
+		    \includegraphics[width=0.47\linewidth]{images/dragonfly_routers.png}
+            \label{fig:dragonfly_routers}
+        }
+    \end{center}
+	\caption{Representação da topologia Dragonfly.}
+	\label{fig:topology}
+\end{figure}
+
+No simulador, essa topologia é utilizada para calcular métricas de comunicação, como número de saltos entre servidores, fluxos entre servidores distintos, fluxos entre \textit{racks} distintos, fluxos entre grupos distintos e custo estimado de comunicação. 
+%
+Dessa forma, o posicionamento das tarefas passa a considerar não apenas a disponibilidade computacional dos servidores, mas também a distância lógica entre tarefas predecessoras e sucessoras na infraestrutura de rede.
+
+Ademais, um simulador de eventos discretos foi desenvolvido em Python\footnote{Disponível em repositório público a ser informado na versão final do artigo.}. 
+%
+A simulação executa inicialmente uma política base, registrando as decisões de escalonamento e as métricas de rede observadas. 
+%
+Em seguida, a política \textit{network-aware} utiliza essas informações históricas, juntamente com a topologia do ambiente, para orientar novas decisões de posicionamento das tarefas. 
+%
+As execuções são comparadas com base em métricas como \textit{makespan}, número de saltos, fluxos entre servidores, fluxos entre \textit{racks}, fluxos entre grupos e custo estimado de comunicação.
+
+
+
+
+
+\section{Protocolo de simulação}
+\label{sec:protocolo_simulacao}
+
+O escalonador proposto atua como uma camada complementar às políticas tradicionais de escalonamento. 
+%
+Ou seja, a proposta não busca substituir o conhecimento previamente difundido, mas sim atuar de forma complementar, melhorando o desempenho de propostas existentes.
+%
+Assim, a ideia central é preservar as restrições de precedência dos DAGs, mas modificar a escolha do servidor de destino com base em métricas relacionadas ao custo de comunicação. 
+%
+Dessa forma, duas tarefas podem continuar sendo selecionadas na mesma ordem definida pela política base, porém seu posicionamento pode ser ajustado para reduzir fluxos entre \textit{racks}, grupos ou servidores distantes na topologia.
+
+
+\subsection{Heurísticas tradicionais}
+\label{subsec:politicas_base}
+
+A proposta é agnóstica quanto à política principal de escalonamento. 
+%
+Dessa forma, a camada \textit{network-aware} pode ser aplicada sobre diferentes heurísticas base, desde que estas sejam capazes de ordenar o conjunto de tarefas prontas e selecionar tarefas elegíveis para execução. 
+%
+Nesta campanha de simulação, são consideradas quatro políticas representativas: EASY Backfilling, HEFT, CPOP e PEFT.
+
+A política EASY Backfilling, derivada do \textit{Extensible Argonne Scheduling sYstem}, representa uma estratégia baseada na ordem de chegada dos jobs, com possibilidade de antecipar a execução de tarefas ou jobs posteriores quando houver recursos ociosos, desde que essa antecipação não atrase a primeira tarefa ou job reservado na fila~\cite{lifka1995anl}. 
+%
+No contexto deste trabalho, essa política é utilizada como uma heurística base simples, orientada principalmente pela disponibilidade dos recursos e pela ordem de submissão.
+
+O HEFT e o CPOP são heurísticas clássicas propostas por Topcuoglu et al.~\cite{topcuoglu2002performance} para o escalonamento de DAGs em ambientes heterogêneos. 
+%
+O HEFT calcula uma prioridade para cada tarefa com base no \textit{rank} ascendente, considerando custos médios de computação e comunicação, e aloca cada tarefa no recurso que proporciona o menor tempo estimado de término. 
+%
+O CPOP, por sua vez, considera a soma dos \textit{ranks} ascendente e descendente para identificar tarefas pertencentes ao caminho crítico e tende a manter essas tarefas em um mesmo processador, buscando reduzir o tempo de conclusão desse caminho crítico.
+
+O PEFT é uma heurística baseada em lista que utiliza uma tabela de custo otimista, denominada \textit{Optimistic Cost Table} (OCT), para estimar o impacto futuro das decisões de escalonamento. 
+%
+Essa estratégia incorpora uma visão antecipada do custo das tarefas sucessoras, considerando não apenas o término imediato da tarefa corrente, mas também uma estimativa otimista do custo restante do DAG~\cite{arabnejad2014peft}.
+
+Em todos os casos, a política base é responsável por definir quais tarefas prontas serão consideradas primeiro. 
+%
+Assim, o escalonador proposto não altera as dependências do DAG nem antecipa tarefas que ainda não estejam liberadas. 
+%
+A modificação ocorre na etapa seguinte, quando é necessário escolher em qual servidor livre a tarefa será executada. 
+%
+Nessa etapa, a camada \textit{network-aware} avalia os servidores candidatos considerando métricas topológicas, histórico de execução e custo estimado de comunicação.
+
+
+\subsection{Escalonamento com consciência da rede}
+\label{subsec:politica_network_aware}
+
+A política seleciona o servidor de destino considerando a topologia do \textit{data center}, o posicionamento das tarefas predecessoras e informações históricas de execuções anteriores. 
+%
+Para cada tarefa pronta, identificada pela heurística base definida na Seção~\ref{subsec:politicas_base}, o escalonador identifica um conjunto de servidores candidatos e estima o custo de comunicação que seria gerado caso a tarefa fosse alocada em cada um deles.
+
+O conjunto de servidores candidatos inclui servidores previamente utilizados pela mesma tarefa em execuções anteriores e servidores próximos aos predecessores da tarefa.
+%
+Em seguida, cada candidato recebe uma pontuação baseada na preferência da política base, nas métricas de comunicação e em um ajuste histórico. 
+%
+O servidor escolhido é aquele que apresenta a menor pontuação final.
+%
+A pontuação utilizada é representada de forma simplificada pela Equação~\ref{eq:network_score}, em que $t$ representa a tarefa a ser escalonada, $s$ representa um servidor candidato, $Score_{base}(s)$ representa a preferência do servidor segundo a política base, $Score_{net}(t,s)$ representa o custo estimado de comunicação, $B_{hist}(t,s)$ representa um bônus ou penalização derivado do histórico de execuções anteriores, e $\lambda$ controla o peso relativo dos componentes na decisão.
+
+\begin{equation}
+Score(t,s) = \lambda \times Score_{base}(s) + (1 - \lambda) \times \left(Score_{net}(t,s) + B_{hist}(t,s)\right)
+\label{eq:network_score}
+\end{equation}
+
+O termo histórico não é tratado como uma métrica independente de desempenho, mas como um ajuste aplicado a decisões previamente observadas. 
+%
+Esse ajuste favorece candidatos localizados em \textit{racks} ou grupos que apresentaram comportamento favorável em execuções anteriores e penaliza cenários que tendem a romper uma localidade previamente eficiente.
+
+O Algoritmo~\ref{alg:network_aware_scheduler} resume a lógica geral da simulação.
+%
+A abordagem recebe como entrada uma política base $P_{base} \in \{\text{EASY}, \text{HEFT}, \text{CPOP}, \text{PEFT}\}$, utilizada para ordenar inicialmente as tarefas prontas.
+%
+Em seguida, para cada tarefa, a política avalia um subconjunto de servidores candidatos com base na topologia, no posicionamento das tarefas predecessoras e no histórico da execução anterior. 
+%
+O servidor selecionado é aquele que minimiza uma pontuação combinada entre a preferência da política base, o custo estimado de comunicação e o ajuste histórico.
+
+\begin{algorithm}[htbp]
+\caption{Simulação do escalonamento de DAGs com consciência da rede, combinado com uma política base}
+\label{alg:network_aware_scheduler}
+\begin{algorithmic}[1]
+
+\STATE Inicializar \textit{workflows}, servidores, topologia e histórico
+\STATE Definir $P_{base} \in \{\text{EASY}, \text{HEFT}, \text{CPOP}, \text{PEFT}\}$
+
+\WHILE{existirem tarefas não concluídas}
+    \STATE Liberar DAGs disponíveis no tempo atual
+    \STATE Atualizar tarefas finalizadas e servidores livres
+    \STATE Identificar tarefas prontas $T_{ready}$
+    \STATE Ordenar $T_{ready}$ conforme $P_{base}$
+
+    \FORALL{$t \in T_{ready}$}
+
+        \STATE Obter servidores livres $S_{free}$
+        \IF{$S_{free} = \emptyset$}
+            \STATE Interromper escalonamento da iteração
+        \ENDIF
+
+        \STATE Selecionar candidatos $S_{cand} \subseteq S_{free}$
+        \STATE Calcular métricas de rede para cada $s \in S_{cand}$
+        \STATE Combinar preferência da política base, custo de rede e ajuste histórico
+        \STATE Selecionar $s^* = \arg\min_{s \in S_{cand}} Score(t,s)$
+        \STATE Escalonar $t$ em $s^*$ e registrar métricas
+
+    \ENDFOR
+
+    \STATE Avançar o tempo da simulação
+
+\ENDWHILE
+
+\end{algorithmic}
+\end{algorithm}
+
+
+
+\subsection{Métricas de decisão}
+\label{subsec:metricas_decisao}
+
+O escore quantificado para representar a rede ($Score_{net}$) é baseada em métricas derivadas da topologia e do posicionamento das tarefas predecessoras. 
+%
+Para cada servidor candidato, a política estima o impacto de alocar a tarefa nesse servidor, considerando se a comunicação resultante atravessaria servidores, \textit{racks} ou grupos distintos da topologia.
+%
+Para uma tarefa $t$ e um servidor candidato $s$, o custo de rede $Score_{net}(t,s)$ é calculado como uma soma ponderada das métricas de comunicação normalizadas, conforme apresentado na Equação~\ref{eq:score_net}, em que $C_{server}(t,s)$ representa a quantidade normalizada de fluxos entre servidores distintos, $C_{rack}(t,s)$ representa a quantidade normalizada de fluxos entre racks distintos, $C_{group}(t,s)$ representa a quantidade normalizada de fluxos entre grupos distintos, e $C_{comm}(t,s)$ representa o custo estimado de comunicação normalizado. Os pesos $w_{server}$, $w_{rack}$, $w_{group}$ e $w_{comm}$ controlam a importância relativa de cada métrica.
+
+
+\begin{equation}
+\begin{split}
+Score_{net}(t,s) =\ & w_{server} \cdot C_{server}(t,s) + w_{rack} \cdot C_{rack}(t,s) \\
+& + w_{group} \cdot C_{group}(t,s) + w_{comm} \cdot C_{comm}(t,s)
+\end{split}
+\label{eq:score_net}
+\end{equation}
+
+
+No cenário balanceado, os pesos são distribuídos igualmente entre as quatro métricas, enquanto em cenários restritivos, um dos pesos pode receber maior importância. 
+%
+Além das métricas utilizadas diretamente no cálculo do custo de rede, o simulador também registra o número total de saltos percorridos na topologia. Essa métrica é utilizada na análise dos resultados para avaliar a distância lógica percorrida pelos fluxos, embora a pontuação de decisão utilize diretamente o custo estimado de comunicação.
+%
+Por fim, as métricas são normalizadas dentro do conjunto de servidores candidatos. 
+
+\subsection{Uso de históricos de execuções}
+\label{subsec:uso_historico}
+
+O uso do histórico ocorre em dois momentos. 
+%
+Primeiro, durante a formação do conjunto de candidatos, o servidor utilizado anteriormente pela mesma tarefa pode ser incluído entre os servidores avaliados.
+%
+Além disso, são considerados servidores próximos aos predecessores da tarefa, especialmente aqueles localizados no mesmo \textit{rack} ou no mesmo grupo de comunicação. 
+%
+Segundo, o histórico é utilizado como um ajuste na pontuação final de cada candidato, representado por $B_{hist}(t,s)$.
+%
+Esse ajuste não representa uma métrica de rede isolada, mas um bônus ou penalização aplicado à pontuação final. 
+%
+Assim, a decisão final combina a preferência da política base, o custo de rede normalizado e a informação histórica por tarefa.
+
+Para cada tarefa, o histórico armazena o servidor utilizado anteriormente, o \textit{rack} e o grupo associados a esse servidor, além de métricas observadas na execução anterior, como número de predecessores, fluxos entre \textit{racks}, fluxos entre grupos, total de saltos e custo estimado de comunicação. 
+%
+O histórico não representa apenas uma média global do comportamento da rede, mas uma memória específica por tarefa, permitindo que o escalonador identifique padrões que foram favoráveis em execuções anteriores.
+
+De forma simplificada, o ajuste histórico pode ser representado pela Equação~\ref{eq:bhist}, em que $r_t^{hist}$ representa o \textit{rack} associado à alocação anterior da tarefa $t$, $g_t^{hist}$ representa o grupo associado à alocação anterior da tarefa, $C_{rack}^{hist}$ representa a quantidade de fluxos entre \textit{racks} observada anteriormente e $C_{group}^{hist}$ representa a quantidade de fluxos entre grupos observada anteriormente.
+
+\begin{equation}
+B_{hist}(t,s) =
+\begin{cases}
+-0.30, & \text{se } group(s)=g_t^{hist} \text{ e } rack(s)=r_t^{hist} \\
+-0.20, & \text{se } group(s)=g_t^{hist} \text{ e } rack(s)\neq r_t^{hist} \\
++0.25, & \text{se } C_{rack}^{hist}=0,\ C_{group}^{hist}=0 \text{ e } group(s)\neq g_t^{hist} \\
+0, & \text{caso contrário}
+\end{cases}
+\label{eq:bhist}
+\end{equation}
+
+A interpretação desse ajuste é a seguinte: quando um servidor candidato pertence ao mesmo grupo anteriormente observado como favorável, sua pontuação é reduzida, tornando-o mais atrativo para o escalonador. Caso ele também pertença ao mesmo \textit{rack}, recebe uma redução adicional. Por outro lado, se a execução anterior não apresentou fluxos entre \textit{racks} nem entre grupos, candidatos que deslocam a tarefa para outro grupo recebem uma penalização. Dessa forma, o histórico favorece a preservação de localidades que já produziram baixo custo de comunicação.
+
+Portanto, o histórico atua como um mecanismo de reforço de localidade. 
+%
+Ele não substitui as métricas de rede calculadas para os candidatos, mas ajusta a decisão com base no comportamento observado em execuções anteriores. Com isso, o escalonador combina três elementos: a ordenação fornecida por uma política tradicional, a avaliação topológica do custo de comunicação e um ajuste histórico por tarefa. Essa combinação permite manter a simplicidade das heurísticas clássicas, ao mesmo tempo em que adiciona consciência de rede ao processo de escalonamento.
+
+\subsection{Parâmetros e métricas}
+\label{subsec:configuracao_experimentos}
+
+A campanha de simulação escalonou 4.000 \textit{workflows} (totalizando 21.360 tarefas) oriundos da literatura~\cite{juve2013characterizing} em uma topologia Dragonfly composta por 90 servidores interconectados por 9 \textit{switches}.
+%
+Cada tarefa possui tempo estimado de execução, tempo de submissão, consumo de recurso e dependências explícitas em relação a outras tarefas do mesmo DAG.
+%
+Foram avaliadas quatro políticas base de escalonamento; sobre cada política base, foram executadas cinco diferentes configurações da política \textit{network-aware} (resumidas na Tabela~\ref{tab:cenarios_avaliados}). 
+%
+A política \textit{baseline} não possui consciência de rede. 
+
+\begin{table}[h!]
+\centering
+\caption{Configurações de pesos avaliadas durante as simulações, padronizadas com a notação usada nos gráficos.}
+\label{tab:cenarios_avaliados}
+\begin{tabular}{ll}
+\hline
+\textbf{Configuração} & \textbf{Descrição da configuração de pesos} \\
+\hline
+\textit{baseline} & Execução da política base sem consciência de rede. \\
+\textit{balanced} & Pesos balanceados entre as métricas de rede. \\
+\textit{rack strict} & Maior penalização para fluxos entre \textit{racks} distintos. \\
+\textit{group strict} & Maior penalização para fluxos entre grupos distintos. \\
+\textit{comm cost strict} & Maior penalização para o custo estimado de comunicação. \\
+\hline
+\end{tabular}
+\end{table}
+
+Quando às métricas, foram analisadas a quantidade total de fluxos de comunicação entre tarefas dependentes, o número total de saltos percorridos na topologia, os fluxos entre servidores, \textit{racks} e grupos distintos, o custo estimado de comunicação, a média de saltos por fluxo e a utilização média dos recursos computacionais.
+%
+Para todas as métricas de comunicação, valores menores indicam melhor desempenho, pois representam menor tráfego atravessando diferentes níveis da topologia. Em particular, reduções na quantidade de fluxos e no número de saltos evidenciam que o escalonador conseguiu aproximar tarefas dependentes, diminuindo o custo lógico de comunicação e aumentando a eficiência na utilização da infraestrutura de rede.
+
+\section{Resultados}
+\label{sec:resultados_discussao}
+
+Este capítulo apresenta e discute os resultados obtidos a partir das simulações realizadas, avaliando o impacto da política de escalonamento consciente da rede quando combinada com as quatro heurísticas de base adotadas neste trabalho (EASY, HEFT, CPOP e PEFT). A Seção~\ref{subsec:discussao_quantitativa} apresenta uma discussão quantitativa dos ganhos observados nas principais métricas de comunicação, com base nos diagramas de caixa consolidados por heurística. Em seguida, a Seção~\ref{sec:significancia_estatistica} avalia a significância estatística desses ganhos, por meio de testes pareados aplicados às diferenças de desempenho entre a política \textit{baseline} e a política \textit{network-aware}. Por fim, a Seção~\ref{subsec:discussao_comparativa} apresenta uma discussão comparativa entre as heurísticas, destacando pontos fortes e limitações de cada uma quando combinadas com a proposta deste trabalho.
+
+
+%------------------------------------------------
+\subsection{Discussão quantitativa}
+\label{subsec:discussao_quantitativa}
+
+A Figura~\ref{fig:politicas} apresenta os resultados consolidados em diagramas de caixa, por heurística, demonstrando o ganho em relação à execução de \textit{baseline}.
+%
+A análise dos resultados mostra ganho médio por tarefa no número total de saltos variando de 3,62\% a 22,14\%, com destaque para a heurística \textit{EASY Backfilling} na configuração \textit{comm cost strict}. 
+%
+Os fluxos entre \textit{racks} apresentaram reduções médias de 10,43\% a 29,48\%, com maior efeito na configuração \textit{rack strict}, enquanto os fluxos entre grupos distintos diminuíram, em média, até 38,51\%, destacando-se EASY e CPOP na configuração \textit{group strict}. 
+%
+O custo estimado de comunicação apresentou queda média de 3,61\% a 23,29\%. 
+%
+Já os fluxos entre servidores melhoraram, em média, até 16,90\% nas heurísticas EASY e CPOP, mas apresentaram piora média de até 5,13\% em HEFT e PEFT, um efeito de compensação: ao aproximar tarefas dependentes para reduzir deslocamentos mais custosos na topologia, o escalonador aumenta comunicações locais entre servidores. 
+%
+Esses valores correspondem às médias das distribuições apresentadas nas figuras e indicam que a política \textit{network-aware} conseguiu auxiliar o posicionamento das tarefas e reduzir o tráfego lógico sobre a topologia.
+
+\begin{figure*}
+\centering
+\subfigure[\textit{Easy Backfilling}.]{
+    \includegraphics[width=0.48\linewidth]{images/easy_stress_grouped_chart.png}
+    \label{fig:easy_stressed}
+}
+\subfigure[HEFT.]{
+    \includegraphics[width=0.48\linewidth]{images/heft_stress_grouped_chart.png}
+    \label{fig:heft_stressed}
+}
+\subfigure[CPOP.]{
+    \includegraphics[width=0.48\linewidth]{images/cpop_stress_grouped_chart.png}
+    \label{fig:cpop_stressed}
+}
+\subfigure[PEFT.]{
+    \includegraphics[width=0.48\linewidth]{images/peft_stress_grouped_chart.png}
+    \label{fig:peft_stressed}
+}
+\caption{Resultados consolidados por política de base.}
+\label{fig:politicas}
+\end{figure*}
+
+De forma geral, as heurísticas analisadas apresentaram melhorias consistentes em métricas de comunicação, sem impacto sobre o \textit{makespan} (resultados omitidos por permanecerem constantes). 
+%
+Configurações específicas, como \textit{rack strict}, \textit{group strict} e \textit{comm cost strict}, permitiram priorizar tipos específicos de fluxo na topologia.
+%
+O histórico de execuções, descrito na Seção~\ref{subsec:uso_historico}, contribuiu para esses ganhos de duas formas: incluiu no conjunto de candidatos o servidor utilizado pela mesma tarefa na execução anterior e ajustou a pontuação final por meio do termo $B_{hist}$ (Equação~\ref{eq:bhist}), favorecendo candidatos no mesmo \textit{rack} ou grupo que apresentaram baixo custo de comunicação anteriormente e penalizando deslocamentos que rompem essa localidade.
+%
+Na prática, o histórico preservou posicionamentos que já haviam se mostrado favoráveis e direcionou as demais tarefas para a vizinhança de seus predecessores. Seu efeito não aparece isolado na Figura~\ref{fig:politicas}, pois todas as configurações \textit{network-aware} o utilizam em conjunto com as métricas topológicas; a quantificação individual dessa contribuição exigiria uma execução \textit{network-aware} sem histórico (ablação), apontada como trabalho futuro.
+%
+%
+Mesmo heurísticas simples, como EASY e CPOP, apresentaram ganhos iguais ou superiores aos de HEFT e PEFT, reforçando a modularidade e flexibilidade da política com consciência da rede.
+
+\subsection{Análise de significância estatística}
+\label{sec:significancia_estatistica}
+
+Para verificar se as diferenças observadas representam melhorias sistemáticas, e não variações pontuais, as tarefas das execuções \textit{baseline} e \textit{network-aware} foram pareadas por identificador e as diferenças por tarefa foram submetidas a testes estatísticos pareados.
+%
+A normalidade das diferenças foi avaliada pelo teste de Shapiro-Wilk e, como a hipótese de normalidade foi rejeitada em todos os casos, utilizou-se o teste não paramétrico de Wilcoxon para amostras pareadas, com nível de significância de 5\% ($p < 0{,}05$).
+%
+A Tabela~\ref{tab:significancia_stress} reporta, para cada combinação de heurística e configuração de pesos, o ganho médio percentual por tarefa em relação à execução \textit{baseline}; os valores de $p$ não são apresentados na tabela, apenas sustentam a análise.
+%
+Valores positivos indicam redução (melhora) da métrica e valores negativos indicam aumento (piora). A coluna Custo corresponde ao custo estimado de comunicação, definido na Seção~\ref{subsec:metricas_decisao}.
+%
+Todos os ganhos reportados foram estatisticamente significativos, exceto a variação de $-0{,}27\%$ nos fluxos entre servidores de HEFT na configuração \textit{balanced} ($p = 0{,}27$).
+
+\begin{table}[h]
+\centering
+\small
+\caption{Ganho médio percentual por tarefa (\textit{baseline} vs.\ \textit{network-aware}) nas métricas de comunicação, no cenário \textit{stressed}.}
+\label{tab:significancia_stress}
+\begin{tabular}{llrrrrr}
+\toprule
+Heurística & Cenário & \textit{Hops} & \textit{Cross-srv} & \textit{Cross-rack} & \textit{Cross-grp} & Custo \\
+\midrule
+EASY & \textit{Balanced} & 21,39\% & 16,90\% & 24,56\% & 27,68\% & 21,82\% \\
+ & \textit{Rack Strict} & 19,83\% & 12,74\% & 29,48\% & 30,09\% & 20,12\% \\
+ & \textit{Group Strict} & 15,97\% & 9,02\% & 19,35\% & 38,51\% & 16,08\% \\
+ & \textit{Comm Cost Strict} & 22,14\% & 15,38\% & 23,86\% & 24,52\% & 23,29\% \\
+\addlinespace
+HEFT & \textit{Balanced} & 7,08\% & -0,27\% & 13,42\% & 17,54\% & 7,28\% \\
+ & \textit{Rack Strict} & 6,21\% & -3,37\% & 17,21\% & 19,54\% & 6,34\% \\
+ & \textit{Group Strict} & 3,62\% & -5,13\% & 10,55\% & 22,70\% & 3,61\% \\
+ & \textit{Comm Cost Strict} & 10,78\% & -0,69\% & 16,88\% & 17,79\% & 11,08\% \\
+\addlinespace
+CPOP & \textit{Balanced} & 18,74\% & 14,56\% & 22,11\% & 23,05\% & 19,21\% \\
+ & \textit{Rack Strict} & 17,25\% & 9,90\% & 27,04\% & 25,72\% & 17,54\% \\
+ & \textit{Group Strict} & 11,92\% & 5,22\% & 15,68\% & 31,22\% & 12,24\% \\
+ & \textit{Comm Cost Strict} & 19,67\% & 12,26\% & 21,35\% & 21,55\% & 20,46\% \\
+\addlinespace
+PEFT & \textit{Balanced} & 5,86\% & -0,87\% & 11,86\% & 14,94\% & 5,87\% \\
+ & \textit{Rack Strict} & 5,30\% & -3,02\% & 15,29\% & 17,12\% & 5,39\% \\
+ & \textit{Group Strict} & 3,75\% & -4,71\% & 10,43\% & 22,59\% & 3,77\% \\
+ & \textit{Comm Cost Strict} & 8,36\% & -1,27\% & 13,44\% & 15,14\% & 8,71\% \\
+\addlinespace
+\bottomrule
+\end{tabular}
+\end{table}
+
+Os resultados (Tabela~\ref{tab:significancia_stress}) indicam que a aplicação da política com consciência da rede mantém resultados consistentes.
+%
+Observa-se, entretanto, que algumas configurações podem apresentar aumento na métrica de fluxos entre servidores. 
+%
+Esse comportamento não invalida a proposta, pois representa um efeito de compensação: ao priorizar a redução de comunicações entre \textit{racks} ou entre grupos, o escalonador pode concentrar tarefas em regiões topologicamente mais próximas, aumentando comunicações locais entre servidores. 
+%
+Assim, a análise deve considerar o conjunto das métricas, especialmente aquelas que representam deslocamentos mais custosos na topologia.
+
+De forma geral, os testes estatísticos reforçam que os ganhos obtidos não decorrem apenas de variações pontuais ou de poucos casos isolados. 
+%
+Ao contrário, os resultados indicam que a política proposta promove alterações sistemáticas no padrão de escalonamento das tarefas, reduzindo o impacto lógico das comunicações na rede sem alterar a semântica dos DAGs nem substituir as heurísticas tradicionais de escalonamento.
+
+
+%------------------------------------------------
+\subsection{Discussão comparativa}
+\label{subsec:discussao_comparativa}
+
+Esta análise evidencia que, embora as heurísticas se beneficiem da política \textit{network-aware}, cada uma possui pontos fortes e limitações inerentes à sua lógica de escalonamento (Tabela~\ref{tab:heuristicas_com_network}). 
+%
+A possibilidade de priorizar métricas específicas confere flexibilidade à abordagem para atender diferentes objetivos operacionais.
+%
+De forma geral, a proposta aproxima o processo de escalonamento das características reais da infraestrutura de rede, permitindo que decisões considerem não apenas disponibilidade computacional e precedência entre tarefas, mas também o impacto topológico das comunicações geradas durante a execução dos \textit{workflows}. 
+
+\begin{table}[h!]
+\scriptsize
+\centering
+\caption{Resumo qualitativo das heurísticas combinadas com a política \textit{network-aware}.}
+\label{tab:heuristicas_com_network}
+\begin{tabular}{l p{5cm} p{7.5cm}}
+\toprule
+\textbf{Heurística} & \textbf{Pontos Fortes} & \textbf{Limitações / Observações} \\
+\midrule
+EASY & {\raggedright Simplicidade de implementação; maiores ganhos relativos entre as heurísticas, com melhorias consistentes em todas as métricas.} & {\raggedright Política base gera mais comunicação, o que amplia a margem de melhoria da consciência da rede.} \\
+\midrule
+HEFT & {\raggedright Reduz significativamente saltos e custo de comunicação com desempenho superior em \textit{workflows} heterogêneos.} & {\raggedright Algoritmo complexo; Pode aumentar fluxos locais entre servidores (efeito de compensação).} \\
+\midrule
+CPOP & {\raggedright Mantém tarefas críticas próximas com redução significativa em \textit{cross-rack flows} e ganhos consistentes sob alta concorrência} & {\raggedright Sensível à parametrização de candidatos; sobrecarga maior para \textit{workflows} com várias tarefas.} \\
+\midrule
+PEFT & {\raggedright Alocação base já eficiente em comunicação.} & {\raggedright Menor ganho relativo entre as heurísticas, pois a política base já explora localidade; também sujeita ao efeito de compensação em fluxos entre servidores.} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+
+\section{Conclusão}
+\label{sec:conclusao}
+
+Este trabalho apresentou uma política de escalonamento de \textit{workflows} consciente da rede. 
+%
+A proposta atua de forma complementar sobre políticas tradicionais de escalonamento.
+%
+As simulações avaliaram quatro heurísticas base (EASY, HEFT, CPOP e PEFT), combinadas com diferentes configurações da política com consciência da rede, variando os pesos atribuídos às métricas de comunicação.
+%
+Os resultados obtidos indicam que a incorporação de consciência de rede no processo de escalonamento melhora consistentemente o perfil de comunicação dos \textit{workflows}, independentemente da heurística base utilizada. 
+%
+Em todos os cenários avaliados, observou-se redução em métricas como número de saltos, fluxos entre servidores, fluxos entre \textit{racks}, fluxos entre grupos e custo estimado de comunicação, sem alteração significativa no comportamento global de execução dos \textit{workflows}.
+%
+Dessa forma, a política proposta aproxima o processo de orquestração das características reais da infraestrutura de comunicação, mantendo compatibilidade com políticas tradicionais e permitindo sua extensão para diferentes estratégias de decisão.
+
+Como trabalhos futuros, pretende-se incorporar medições efetivas de latência, \textit{buffers}, largura de banda e ocupação de enlaces, bem como explorar mecanismos automáticos para ajuste dinâmico dos pesos das métricas de rede. 
+
+\section*{Agradecimentos}
+Este trabalho recebeu apoio financeiro do Conselho Nacional de Desenvolvimento Científico e Tecnológico (CNPq), FAPESC e foi desenvolvido no LabP2D.
+
+\bibliographystyle{sbc}
+\bibliography{references}
+
+\end{document}
